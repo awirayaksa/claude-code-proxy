@@ -87,6 +87,10 @@ cp .env.example .env
 | `CLAUDE_TIMEOUT_MS` | `120000` | Max ms to wait for a response before returning a timeout error (2 minutes) |
 | `SESSION_TTL_MS` | `600000` | How long an idle session is kept alive before being evicted (10 minutes) |
 | `PROMPT_DEBOUNCE_MS` | `500` | Ms to wait after the status bar returns to idle before declaring the response complete |
+| `PTY_WRITE_CHUNK_SIZE` | `64` | Chars per chunk when writing a prompt to the PTY — prevents Claude Code's TUI from treating long prompts as paste events |
+| `PTY_WRITE_CHUNK_DELAY_MS` | `10` | Ms between prompt-write chunks |
+| `PTY_WRITE_SUBMIT_DELAY_MS` | `150` | Ms to pause after the prompt text before sending the submit `\r` |
+| `CONTENT_STABLE_MS` | `5000` | Ms of unchanged screen content that triggers completion when the status bar is hidden (fallback for long-input TUI mode) |
 | `DEBUG` | `false` | Set to `true` to print verbose PTY session logs |
 | `PTY_DEBUG` | `false` | Set to `true` to print every raw PTY chunk, status bar state, and full screen dump on each response — like running debug-pty.js |
 

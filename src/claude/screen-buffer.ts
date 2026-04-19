@@ -151,6 +151,25 @@ export class ScreenBuffer {
   }
 
   /**
+   * Cheap rolling hash over the content area (excludes bottom `excludeBottom` rows
+   * so status-bar spinner ticks don't count as content change). No allocation —
+   * one pass, single 32-bit accumulator. Used to detect when Claude's response
+   * has stopped changing while the status bar is hidden.
+   */
+  contentHash(excludeBottom = 2): number {
+    const limit = this.rows - excludeBottom;
+    const buf = this._buf();
+    let h = 0;
+    for (let r = 0; r < limit; r++) {
+      const row = buf[r];
+      for (let c = 0; c < this.cols; c++) {
+        h = (h * 31 + row[c].charCodeAt(0)) | 0;
+      }
+    }
+    return h;
+  }
+
+  /**
    * Compare two snapshots, return only new non-whitespace content in rows
    * that changed within the content area (excludes status bar rows).
    */

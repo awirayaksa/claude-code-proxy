@@ -8,6 +8,20 @@ const PROMPT_DEBOUNCE_MS = parseInt(process.env.PROMPT_DEBOUNCE_MS ?? '500', 10)
 const DEBUG = process.env.DEBUG === 'true';
 const PTY_DEBUG = process.env.PTY_DEBUG === 'true';
 
+// Prompts are written in small chunks with inter-chunk delays so Claude Code's
+// TUI doesn't classify them as a paste event (which hides the status bar and
+// can swallow the trailing \r). The submit \r is then sent as a separate write
+// after a brief pause so it's unambiguously a keypress.
+const PTY_WRITE_CHUNK_SIZE = parseInt(process.env.PTY_WRITE_CHUNK_SIZE ?? '64', 10);
+const PTY_WRITE_CHUNK_DELAY_MS = parseInt(process.env.PTY_WRITE_CHUNK_DELAY_MS ?? '10', 10);
+const PTY_WRITE_SUBMIT_DELAY_MS = parseInt(process.env.PTY_WRITE_SUBMIT_DELAY_MS ?? '150', 10);
+
+// Defensive completion fallback: if the status bar stays hidden (long-input
+// TUI mode) but the screen content hasn't changed for this long, treat the
+// response as complete. Only fires when bar is blank — tool-call spinners
+// show "interrupt" so they remain busy and don't trip this.
+const CONTENT_STABLE_MS = parseInt(process.env.CONTENT_STABLE_MS ?? '5000', 10);
+
 /** Build the CLI argument list for the claude process from env vars. */
 function buildClaudeArgs(): string[] {
   const args: string[] = [];
@@ -135,6 +149,8 @@ export class PTYSession {
   private responseStarted = false;
   private promptSentAt = 0;
   private lastContentSnapshot: string[][] = [];
+  private lastContentChangeAt = 0;
+  private lastContentHash = 0;
 
   // Queue for concurrent requests on the same session
   private queue: SessionRequest[] = [];
@@ -203,6 +219,8 @@ export class PTYSession {
 
     // Take a before-snapshot to diff against
     this.lastContentSnapshot = this.screen.snapshot();
+    this.lastContentHash = this.screen.contentHash();
+    this.lastContentChangeAt = Date.now();
 
     // Hard timeout watchdog
     this.hardTimeout = setTimeout(() => {
@@ -217,16 +235,38 @@ export class PTYSession {
     debug(`Sending: ${ptyInput.slice(0, 80)}`);
     if (PTY_DEBUG) console.log(`[PTY] Writing prompt (${ptyInput.length} chars): ${ptyInput.slice(0, 120)}${ptyInput.length > 120 ? '…' : ''}`);
     this.promptSentAt = Date.now();
-    this._writePrompt(ptyInput);
+    void this._writePrompt(ptyInput);
   }
 
-  private _writePrompt(text: string): void {
-    this.ptyProc.write(text + '\r');
+  private async _writePrompt(text: string): Promise<void> {
+    try {
+      for (let i = 0; i < text.length; i += PTY_WRITE_CHUNK_SIZE) {
+        if (this._state === 'dead') return;
+        this.ptyProc.write(text.slice(i, i + PTY_WRITE_CHUNK_SIZE));
+        if (i + PTY_WRITE_CHUNK_SIZE < text.length) {
+          await new Promise<void>((r) => setTimeout(r, PTY_WRITE_CHUNK_DELAY_MS));
+        }
+      }
+      await new Promise<void>((r) => setTimeout(r, PTY_WRITE_SUBMIT_DELAY_MS));
+      if (this._state === 'dead') return;
+      this.ptyProc.write('\r');
+    } catch (err) {
+      this.currentRequest?.onError(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   private _handleData(raw: string): void {
     this.screen.write(raw);
     this._chunkIndex++;
+
+    // Track when the content area last changed (excluding the status bar) so
+    // the content-stabilization fallback can detect a finished response when
+    // the bar stays hidden in Claude Code's long-input TUI mode.
+    const hash = this.screen.contentHash();
+    if (hash !== this.lastContentHash) {
+      this.lastContentHash = hash;
+      this.lastContentChangeAt = Date.now();
+    }
 
     const statusBar = findStatusBar(this.screen);
     const isIdle = isIdleStatusBar(statusBar);
@@ -324,6 +364,21 @@ export class PTYSession {
     if (!this.responseStarted && elapsed > 3000 && !isIdle && !isBusy) {
       debug('responseStarted set via blank-status fallback (status bar hidden >3 s)');
       this.responseStarted = true;
+    }
+
+    // Content-stabilization fallback: Claude Code's long-input TUI mode can keep
+    // the status bar hidden through generation and never restore the idle bar
+    // when done. If the bar is blank and the content area has been unchanged
+    // long enough, fire completion through the normal debounce path.
+    if (
+      this.responseStarted &&
+      !isIdle && !isBusy &&
+      elapsed > 5000 &&
+      Date.now() - this.lastContentChangeAt > CONTENT_STABLE_MS &&
+      !this.promptDebounce
+    ) {
+      debug('Completion via content-stabilization fallback (blank bar + no content change)');
+      this.promptDebounce = setTimeout(() => this._finishResponse(), PROMPT_DEBOUNCE_MS);
     }
 
     // Detect response complete: status bar returns to idle AFTER we confirmed busy.
@@ -438,6 +493,8 @@ export class PTYSession {
     if (this.promptDebounce) { clearTimeout(this.promptDebounce); this.promptDebounce = null; }
     this.currentRequest = null;
     this.responseStarted = false;
+    this.lastContentHash = 0;
+    this.lastContentChangeAt = 0;
     this._state = 'ready';
     this.lastUsed = Date.now();
   }
