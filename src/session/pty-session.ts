@@ -129,6 +129,7 @@ export class PTYSession {
   private promptDebounce: NodeJS.Timeout | null = null;
   private hardTimeout: NodeJS.Timeout | null = null;
   private responseStarted = false;
+  private promptSentAt = 0;
   private lastContentSnapshot: string[][] = [];
 
   // Queue for concurrent requests on the same session
@@ -211,30 +212,21 @@ export class PTYSession {
     const ptyInput = req.prompt.replace(/\n+/g, ' ').trim();
     debug(`Sending: ${ptyInput.slice(0, 80)}`);
     if (PTY_DEBUG) console.log(`[PTY] Writing prompt (${ptyInput.length} chars): ${ptyInput.slice(0, 120)}${ptyInput.length > 120 ? '…' : ''}`);
+    this.promptSentAt = Date.now();
     this._writePrompt(ptyInput);
   }
 
   /**
-   * Write a prompt to the PTY in chunks to avoid overwhelming the PTY buffer.
-   * Large single writes stall on Linux: the PTY drains slowly and the Enter key
-   * (\r) at the end arrives before Claude Code has received the full text.
-   * Writing in small chunks with brief pauses ensures all text is delivered
-   * before the submission keystroke is sent.
+   * Write a prompt using bracketed paste mode (\x1b[200~...\x1b[201~).
+   * This is the standard terminal protocol for paste events — it tells Claude
+   * Code's TUI to accept the text as a single paste rather than character-by-
+   * character input, preventing the large-input rendering path that hides the
+   * status bar and stalls the session.
    */
   private _writePrompt(text: string): void {
-    const CHUNK = 200;
-    const DELAY_MS = 15;
-    let offset = 0;
-    const writeNext = () => {
-      if (offset >= text.length) {
-        this.ptyProc.write('\r');
-        return;
-      }
-      this.ptyProc.write(text.slice(offset, offset + CHUNK));
-      offset += CHUNK;
-      setTimeout(writeNext, DELAY_MS);
-    };
-    writeNext();
+    this.ptyProc.write('\x1b[200~' + text + '\x1b[201~');
+    // Small pause so the TUI registers the paste before the Enter keystroke.
+    setTimeout(() => this.ptyProc.write('\r'), 50);
   }
 
   private _handleData(raw: string): void {
@@ -320,6 +312,16 @@ export class PTYSession {
       this.responseStarted = true;
       debug('Response started (esc to interrupt detected)');
       if (PTY_DEBUG) console.log('[PTY] Claude is thinking (esc to interrupt)');
+    }
+
+    // Fallback: for long prompts the TUI may hide the status bar during paste
+    // processing and skip the "interrupt" state entirely. If idle returns more
+    // than 2 s after the prompt was sent, treat it as a genuine response-done
+    // even without having observed the busy state.
+    const elapsed = Date.now() - this.promptSentAt;
+    if (!this.responseStarted && isIdle && elapsed > 2000) {
+      debug('responseStarted set via time-based fallback (no interrupt observed)');
+      this.responseStarted = true;
     }
 
     // Detect response complete: status bar returns to idle AFTER we confirmed busy.
