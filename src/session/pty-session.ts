@@ -45,8 +45,12 @@ function buildClaudeArgs(): string[] {
   return args;
 }
 
-const COLS = 220;
-const ROWS = 200;
+// Wide terminal prevents long prompts from wrapping across rows.
+// Line-wrap re-renders in Claude Code's TUI cause slow echo (~25 bytes/s) and
+// hide the status bar for the duration. At COLS=4096 even a 1500-char prompt
+// occupies < 1 visual row, so no re-render is needed.
+const COLS = parseInt(process.env.PTY_COLS ?? '4096', 10);
+const ROWS = parseInt(process.env.PTY_ROWS ?? '200', 10);
 
 function debug(...args: unknown[]) {
   if (DEBUG) console.log('[PTYSession]', ...args);
