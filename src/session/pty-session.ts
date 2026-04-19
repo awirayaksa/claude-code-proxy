@@ -8,6 +8,43 @@ const PROMPT_DEBOUNCE_MS = parseInt(process.env.PROMPT_DEBOUNCE_MS ?? '500', 10)
 const DEBUG = process.env.DEBUG === 'true';
 const PTY_DEBUG = process.env.PTY_DEBUG === 'true';
 
+/** Build the CLI argument list for the claude process from env vars. */
+function buildClaudeArgs(): string[] {
+  const args: string[] = [];
+
+  if (process.env.CLAUDE_MODEL)
+    args.push('--model', process.env.CLAUDE_MODEL);
+
+  if (process.env.CLAUDE_ADD_DIR) {
+    for (const dir of process.env.CLAUDE_ADD_DIR.split(',').map(d => d.trim()).filter(Boolean))
+      args.push('--add-dir', dir);
+  }
+
+  if (process.env.CLAUDE_ALLOWED_TOOLS)
+    args.push('--allowedTools', process.env.CLAUDE_ALLOWED_TOOLS);
+
+  if (process.env.CLAUDE_DISALLOWED_TOOLS)
+    args.push('--disallowedTools', process.env.CLAUDE_DISALLOWED_TOOLS);
+
+  if (process.env.CLAUDE_SYSTEM_PROMPT)
+    args.push('--system-prompt', process.env.CLAUDE_SYSTEM_PROMPT);
+
+  if (process.env.CLAUDE_APPEND_SYSTEM_PROMPT)
+    args.push('--append-system-prompt', process.env.CLAUDE_APPEND_SYSTEM_PROMPT);
+
+  if (process.env.CLAUDE_SKIP_PERMISSIONS === 'true')
+    args.push('--dangerously-skip-permissions');
+
+  if (process.env.CLAUDE_MAX_TURNS)
+    args.push('--max-turns', process.env.CLAUDE_MAX_TURNS);
+
+  // Escape hatch: raw space-separated flags for anything else
+  if (process.env.CLAUDE_ARGS)
+    args.push(...process.env.CLAUDE_ARGS.split(/\s+/).filter(Boolean));
+
+  return args;
+}
+
 const COLS = 220;
 const ROWS = 50;
 
@@ -102,11 +139,13 @@ export class PTYSession {
 
   constructor(id: string) {
     this.id = id;
-    this.ptyProc = pty.spawn(CLAUDE_PATH, [], {
+    const claudeArgs = buildClaudeArgs();
+    debug(`Spawning claude${claudeArgs.length ? ' ' + claudeArgs.join(' ') : ''}`);
+    this.ptyProc = pty.spawn(CLAUDE_PATH, claudeArgs, {
       name: 'xterm-color',
       cols: COLS,
       rows: ROWS,
-      cwd: process.cwd(),
+      cwd: process.env.CLAUDE_CWD ?? process.cwd(),
       env: process.env as Record<string, string>,
     });
 
