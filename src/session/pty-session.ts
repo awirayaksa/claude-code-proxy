@@ -211,7 +211,30 @@ export class PTYSession {
     const ptyInput = req.prompt.replace(/\n+/g, ' ').trim();
     debug(`Sending: ${ptyInput.slice(0, 80)}`);
     if (PTY_DEBUG) console.log(`[PTY] Writing prompt (${ptyInput.length} chars): ${ptyInput.slice(0, 120)}${ptyInput.length > 120 ? '…' : ''}`);
-    this.ptyProc.write(ptyInput + '\r');
+    this._writePrompt(ptyInput);
+  }
+
+  /**
+   * Write a prompt to the PTY in chunks to avoid overwhelming the PTY buffer.
+   * Large single writes stall on Linux: the PTY drains slowly and the Enter key
+   * (\r) at the end arrives before Claude Code has received the full text.
+   * Writing in small chunks with brief pauses ensures all text is delivered
+   * before the submission keystroke is sent.
+   */
+  private _writePrompt(text: string): void {
+    const CHUNK = 200;
+    const DELAY_MS = 15;
+    let offset = 0;
+    const writeNext = () => {
+      if (offset >= text.length) {
+        this.ptyProc.write('\r');
+        return;
+      }
+      this.ptyProc.write(text.slice(offset, offset + CHUNK));
+      offset += CHUNK;
+      setTimeout(writeNext, DELAY_MS);
+    };
+    writeNext();
   }
 
   private _handleData(raw: string): void {
