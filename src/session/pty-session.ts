@@ -318,11 +318,31 @@ export class PTYSession {
   /**
    * Extract Claude's response text by diffing the final screen against the
    * pre-send snapshot. Filters out prompt echoes, separator lines, and status bar.
+   *
+   * The diff alone is unreliable across requests because the terminal scrolls:
+   * rows that held the welcome panel in `before` may hold different panel content
+   * in `after`, making them appear "changed" even though they aren't response text.
+   * We anchor extraction to the row immediately after the prompt echo so we only
+   * ever collect rows that Claude wrote in response to this specific prompt.
    */
-  private _extractResponse(before: string[][], after: string[][]): string {
+  private _extractResponse(before: string[][], after: string[][], prompt?: string): string {
     const lines: string[] = [];
 
-    for (let r = 0; r < this.screen.rows; r++) {
+    // Find the row where the prompt echo appears (❯ <prompt text>) and start
+    // extracting only from the row below it. Fall back to row 0 if not found.
+    let startRow = 0;
+    if (prompt) {
+      const needle = prompt.replace(/\n+/g, ' ').trim().slice(0, 40);
+      for (let r = 0; r < this.screen.rows; r++) {
+        const row = (after[r] ?? []).join('').trimEnd();
+        if ((row.includes('❯') || row.includes('>')) && row.includes(needle)) {
+          startRow = r + 1;
+          break;
+        }
+      }
+    }
+
+    for (let r = startRow; r < this.screen.rows; r++) {
       const bRow = (before[r] ?? []).join('').trimEnd();
       const aRow = (after[r] ?? []).join('').trimEnd();
 
@@ -368,7 +388,7 @@ export class PTYSession {
 
     // Extract response text from screen diff (pre-send vs final)
     const finalSnap = this.screen.snapshot();
-    const responseText = this._extractResponse(this.lastContentSnapshot, finalSnap);
+    const responseText = this._extractResponse(this.lastContentSnapshot, finalSnap, req.prompt);
     debug(`Response complete: ${responseText.slice(0, 80)}`);
 
     if (PTY_DEBUG) {
