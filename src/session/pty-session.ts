@@ -46,7 +46,7 @@ function buildClaudeArgs(): string[] {
 }
 
 const COLS = 220;
-const ROWS = 50;
+const ROWS = 200;
 
 function debug(...args: unknown[]) {
   if (DEBUG) console.log('[PTYSession]', ...args);
@@ -364,8 +364,8 @@ export class PTYSession {
       // Skip status bar lines
       if (aRow.includes('shortcuts') || aRow.includes('interrupt') || aRow.includes('effort')) continue;
 
-      // Skip spinner and auto-update notification lines (Linux: these appear as changed rows)
-      if (stripped.includes('Brewing') || stripped.includes('Auto-updating')) continue;
+      // Skip spinner lines (✻/✶/* <Word>…) and auto-update notifications
+      if (/^[*✶✻·]\s+\w/.test(stripped) || stripped.includes('Auto-updating')) continue;
 
       // Strip Claude's ● response-turn indicator prefix
       let text = stripped;
