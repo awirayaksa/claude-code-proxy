@@ -216,17 +216,8 @@ export class PTYSession {
     this._writePrompt(ptyInput);
   }
 
-  /**
-   * Write a prompt using bracketed paste mode (\x1b[200~...\x1b[201~).
-   * This is the standard terminal protocol for paste events — it tells Claude
-   * Code's TUI to accept the text as a single paste rather than character-by-
-   * character input, preventing the large-input rendering path that hides the
-   * status bar and stalls the session.
-   */
   private _writePrompt(text: string): void {
-    this.ptyProc.write('\x1b[200~' + text + '\x1b[201~');
-    // Small pause so the TUI registers the paste before the Enter keystroke.
-    setTimeout(() => this.ptyProc.write('\r'), 50);
+    this.ptyProc.write(text + '\r');
   }
 
   private _handleData(raw: string): void {
@@ -314,13 +305,20 @@ export class PTYSession {
       if (PTY_DEBUG) console.log('[PTY] Claude is thinking (esc to interrupt)');
     }
 
-    // Fallback: for long prompts the TUI may hide the status bar during paste
-    // processing and skip the "interrupt" state entirely. If idle returns more
-    // than 2 s after the prompt was sent, treat it as a genuine response-done
-    // even without having observed the busy state.
+    // Fallbacks for when "interrupt" is never observed:
+    // (a) Long-input TUI mode: status bar goes blank while Claude Code processes a
+    //     large paste, then jumps straight to idle when done. Treat idle as valid
+    //     after 2 s so we don't mistake the post-send stale idle (which arrives in
+    //     the first few hundred ms) for a completed response.
+    // (b) Blank-bar fallback: if the status bar has been missing for >3 s, set
+    //     responseStarted so that when idle eventually returns we capture it.
     const elapsed = Date.now() - this.promptSentAt;
-    if (!this.responseStarted && isIdle && elapsed > 2000) {
-      debug('responseStarted set via time-based fallback (no interrupt observed)');
+    if (!this.responseStarted && elapsed > 2000 && isIdle) {
+      debug('responseStarted set via time-based fallback (idle seen, no interrupt)');
+      this.responseStarted = true;
+    }
+    if (!this.responseStarted && elapsed > 3000 && !isIdle && !isBusy) {
+      debug('responseStarted set via blank-status fallback (status bar hidden >3 s)');
       this.responseStarted = true;
     }
 
