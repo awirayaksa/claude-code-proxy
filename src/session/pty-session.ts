@@ -344,9 +344,17 @@ export class PTYSession {
       // Skip status bar lines
       if (aRow.includes('shortcuts') || aRow.includes('interrupt') || aRow.includes('effort')) continue;
 
+      // Skip spinner and auto-update notification lines (Linux: these appear as changed rows)
+      if (stripped.includes('Brewing') || stripped.includes('Auto-updating')) continue;
+
       // Strip Claude's ● response-turn indicator prefix
       let text = stripped;
       if (text.startsWith('●')) text = text.slice(1).trimStart();
+
+      // On Linux, Claude Code renders separator lines with ─ (U+2500) and then writes
+      // response text over them without clearing, leaving ─ in place of spaces between
+      // words. Replace all box-drawing chars with spaces and collapse runs.
+      text = text.replace(/[\u2500-\u257F]/g, ' ').replace(/  +/g, ' ').trim();
 
       if (text.trim()) lines.push(text.trimEnd());
     }
